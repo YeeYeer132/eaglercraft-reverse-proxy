@@ -1,15 +1,14 @@
 @echo off
-chcp 65001 >nul
-echo 正在编译 TypeScript...
+echo Compiling TypeScript...
 echo.
 call npx tsc
 if %ERRORLEVEL% EQU 0 (
     echo.
-    echo [成功] 编译完成！
+    echo [Success] Build complete!
     echo.
 ) else (
     echo.
-    echo [错误] 编译失败！
+    echo [Error] Build failed!
     echo.
 )
 pause

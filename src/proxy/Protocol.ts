@@ -1,17 +1,10 @@
 import { encodeULEB128 as _encodeVarInt, decodeULEB128 as _decodeVarInt } from "@thi.ng/leb128";
-import { Enums } from "./Enums.js";
 import { Util } from "./Util.js";
 
-// reference: https://wiki.vg/index.php?title=Protocol&oldid=7368 (id: 73)
-// use https://hexed.it/ for hex analysis, dumps.ts for example dumps
-// this simple wrapper only contains utilities for reading & writing VarInts and strings, which are the
-// datatypes being used thus far. There may be more, but however, they will be added here as needed.
-
+// Minecraft 协议工具类
 export namespace MineProtocol {
   export type ReadResult<T> = {
     value: T;
-    // the new buffer, but with the bytes being read being completely removed
-    // very useful when it comes to chaining
     newBuffer: Buffer;
   };
 
@@ -26,7 +19,6 @@ export namespace MineProtocol {
     const read = _decodeVarInt(buff),
       len = read[1];
     return {
-      // potential oversight?
       value: Number(read[0]),
       newBuffer: buff.subarray(len),
     };

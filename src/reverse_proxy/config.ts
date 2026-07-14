@@ -13,7 +13,7 @@ export const config: ReverseProxyConfig = {
   // Eaglercraft 服务器地址 (WebSocket URL)
   // 示例: "ws://localhost:8081" 或 "wss://eaglercraft.example.com"
   // 请修改为你要连接的 Eaglercraft 服务器地址
-  eaglerServer: "wss://your-eagler-server.com",
+  eaglerServer: "wss://mc.smgoro.com",
 
   // 最大玩家数量
   maxPlayers: 20,

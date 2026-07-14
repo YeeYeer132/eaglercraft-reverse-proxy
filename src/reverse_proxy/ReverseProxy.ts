@@ -1,10 +1,11 @@
 import EventEmitter from "events";
 import mcp, { createServer, Server, states } from "minecraft-protocol";
 import { Logger } from "../logger.js";
-import { EaglerClient, EaglerClientOptions } from "./EaglerClient.js";
+import { EaglerClient } from "./EaglerClient.js";
 import { ReverseEnums } from "./Enums.js";
+import { MineProtocol } from "../proxy/Protocol.js";
 
-const { createSerializer, createDeserializer } = mcp;
+const { createSerializer } = mcp;
 
 export interface ReverseProxyConfig {
   tcpHost: string;
@@ -22,19 +23,8 @@ export interface ConnectedPlayer {
   mcClient: any;
 }
 
-// Eaglercraft 自定义包过滤
-// 注意：Minecraft 1.8.9 协议中：
-//   0x04 = Entity Equipment (实体装备) - 不能过滤！
-//   0x05 = Entity Metadata (实体元数据) - 不能过滤！
-//   0x06 = Entity Velocity (实体速度) - 不能过滤！
-// Eaglercraft 的皮肤包使用不同的频道，不需要过滤 ID
-
-// 只过滤频道消息中的皮肤相关频道
-// 这些频道通过 0x17 (CSChannelMessage) 和 0x3f (SCChannelMessage) 发送
-// 暂时不过滤，让客户端自己处理
-
 /**
- * 反向代理
+ * 反向代理 - 高性能版本
  * 接收原版 Minecraft 客户端连接，转发到 Eaglercraft WebSocket 服务器
  */
 export class ReverseProxy extends EventEmitter {
@@ -50,7 +40,7 @@ export class ReverseProxy extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    this.logger.info("Starting Reverse Proxy...");
+    this.logger.info("Starting Eaglercraft Reverse Proxy...");
     this.logger.info(`TCP Server: ${this.config.tcpHost}:${this.config.tcpPort}`);
     this.logger.info(`Eaglercraft Server: ${this.config.eaglerServer}`);
 
@@ -116,7 +106,7 @@ export class ReverseProxy extends EventEmitter {
       };
       this.players.set(username, player);
 
-      await this.setupPacketForwarding(player);
+      this.setupPacketForwarding(player);
       this.emit("playerConnect", player);
 
     } catch (err) {
@@ -125,11 +115,15 @@ export class ReverseProxy extends EventEmitter {
     }
   }
 
-  private async setupPacketForwarding(player: ConnectedPlayer): Promise<void> {
+  /**
+   * 高性能数据包转发
+   * 优化：减少对象创建、避免阻塞事件循环
+   */
+  private setupPacketForwarding(player: ConnectedPlayer): void {
     const { mcClient, eaglerClient } = player;
     const debug = this.config.debug;
 
-    // 客户端序列化器
+    // 预创建序列化器，避免重复创建
     const clientSerializer = createSerializer({
       state: states.PLAY,
       isServer: false,
@@ -141,9 +135,16 @@ export class ReverseProxy extends EventEmitter {
     let packetsToServer = 0;
     let packetsToClient = 0;
     let lastStatsTime = Date.now();
-    let loginSent = false;
 
+    // 高频数据包名称缓存（避免字符串比较）
+    const highFrequencyPackets = new Set([
+      'flying', 'look', 'position', 'position_look', 'keep_alive', 'arm_animation'
+    ]);
+
+    // ================================
     // Minecraft 客户端 → Eaglercraft 服务器
+    // 优化：跳过高频数据包的调试日志
+    // ================================
     mcClient.on("packet", (packet: any, meta: any) => {
       if (meta.state !== states.PLAY) return;
 
@@ -155,70 +156,52 @@ export class ReverseProxy extends EventEmitter {
         eaglerClient.sendRaw(buffer);
         packetsToServer++;
 
-        if (debug && packetsToServer % 100 === 0) {
-          this.logger.debug(`[${player.username}] Sent ${packetsToServer} packets to server`);
+        // 只在 debug 模式下记录非高频数据包
+        if (debug && !highFrequencyPackets.has(meta.name)) {
+          this.logger.debug(`[${player.username}] C->S: ${meta.name}`);
         }
       } catch (err) {
         if (debug) {
-          this.logger.debug(`[${player.username}] Packet error: ${(err as Error).message}`);
+          this.logger.debug(`[${player.username}] Encode error: ${(err as Error).message}`);
         }
       }
     });
 
+    // ================================
     // Eaglercraft 服务器 → Minecraft 客户端
+    // 优化：直接转发，最小化处理开销
+    // ================================
     eaglerClient.on("packet", (data: Buffer) => {
       const packetId = data[0];
 
-      // 检查是否是断开包 (0x40 在 1.8.9 是 kick_disconnect)
+      // 断开包处理 (0x40 = kick_disconnect)
       if (packetId === 0x40) {
         try {
-          // 解析断开原因
-          let reason = "Unknown";
-          try {
-            const reasonData = data.slice(1);
-            // 尝试读取字符串
-            const len = reasonData.readUInt8(0);
-            if (len < 128 && reasonData.length > len) {
-              reason = reasonData.slice(1, 1 + len).toString('utf8');
-              try {
-                const json = JSON.parse(reason);
-                reason = json.text || json.translate || reason;
-              } catch {}
-            }
-          } catch {}
+          const reason = this.parseKickPacket(data);
           this.logger.warn(`[${player.username}] Server kicked: ${reason}`);
         } catch {}
       }
 
-      // 直接转发所有数据包，不再过滤
+      // 直接转发，不做任何处理
       try {
         mcClient.writeRaw(data);
         packetsToClient++;
-
-        if (!loginSent) {
-          loginSent = true;
-          this.logger.info(`[${player.username}] Login complete, stream started`);
-        }
-
-        if (debug && packetsToClient % 100 === 0) {
-          this.logger.debug(`[${player.username}] Received ${packetsToClient} packets from server`);
-        }
       } catch (err) {
         if (debug) {
-          this.logger.debug(`[${player.username}] Packet forward error: ${(err as Error).message}`);
+          this.logger.debug(`[${player.username}] Forward error: ${(err as Error).message}`);
         }
       }
     });
 
-    // 定期打印统计
+    // 统计输出（降低频率到 60 秒）
     const statsInterval = setInterval(() => {
       const now = Date.now();
       const elapsed = now - lastStatsTime;
-      if (elapsed >= 30000 && (packetsToServer > 0 || packetsToClient > 0)) {
-        this.logger.info(`[${player.username}] Stats: ${packetsToServer} packets sent, ${packetsToClient} packets received`);
+      if (elapsed >= 60000 && (packetsToServer > 0 || packetsToClient > 0)) {
+        this.logger.info(`[${player.username}] Stats: ${packetsToServer} sent, ${packetsToClient} received`);
         lastStatsTime = now;
       }
-    }, 30000);
+    }, 60000);
 
     // 断开连接处理
     mcClient.on("end", () => {
@@ -243,6 +226,27 @@ export class ReverseProxy extends EventEmitter {
       mcClient.end(`§cError: ${err.message}`);
       this.players.delete(player.username);
     });
+  }
+
+  /**
+   * 解析踢人包
+   */
+  private parseKickPacket(data: Buffer): string {
+    try {
+      data = data.subarray(1);
+      const reason = MineProtocol.readString(data);
+      let message = reason.value;
+
+      try {
+        const json = JSON.parse(message);
+        if (json.text) message = json.text;
+        else if (json.translate) message = json.translate;
+      } catch {}
+
+      return message;
+    } catch {
+      return "Unknown reason";
+    }
   }
 
   async stop(): Promise<void> {
