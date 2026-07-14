@@ -3,7 +3,7 @@
     "module": "esnext",
     "esModuleInterop": true,
     "target": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "sourceMap": false,
     "outDir": "build",
     "resolveJsonModule": true,
