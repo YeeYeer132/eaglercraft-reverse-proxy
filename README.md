@@ -1,104 +1,80 @@
-# EaglerProxy
+# Eaglercraft Reverse Proxy
 
-<a href="https://repl.it/github/WorldEditAxe/eaglerproxy"><img height="30px" src="https://raw.githubusercontent.com/FogNetwork/Tsunami/main/deploy/replit2.svg"><img></a>  
-A standalone reimplementation of EaglercraftX's bungee plugin written in TypeScript, with plugin support.
+让原版 Minecraft 1.8.9 客户端连接 Eaglercraft WebSocket 服务器。
 
-_Working for latest EaglercraftX client version as of `3/12/2025`_
+## 功能
 
-## Known Issues
+- 将 Minecraft TCP 协议转换为 Eaglercraft WebSocket 协议
+- 支持原版 Minecraft 1.8.9 客户端
+- 自动处理握手、皮肤、KeepAlive 等
+- 支持多玩家同时连接
 
-- [EagProxyAAS] Player is missing skin when connected to server
-  - Due to Eaglercraft's skin system and how it works, forcing skins onto the client is impossible (from what I know so far). This is only a client-sided bug/glitch - others will only see your Mojang/Minecraft account skin and cape.
+## 快速开始
 
-## Installing and Running
+### 环境要求
 
-This assumes that you have [Node.js](https://nodejs.org/en) LTS or higher installed on your computer, and that you have basic Git and CLI (command line) knowledge.
+- Node.js 18+
+- npm
 
-1. Clone/download this repository.
-2. Modify and configure `config.ts` to your liking.
-3. Install TypeScript and required dependencies (`npm i -g typescript` and `npm i`).
-4. Compile the TypeScript code into normal JavaScript code (`tsc`).
-5. Go into the `build` directory, and run `node index.js`.
+### 安装
 
-### Important: For non-traditional runtime environments
-
-For the most part, this proxy (and its dependencies) transpiles to pure JavaScript, and does not require anything more than a full implementation of the Node.js API (with the exception of node-gyp/native support). _Crypto support is required for the proxy to run._  
-**<u>If you are running the proxy through either Termux or CodeSandbox's on-device runtime:</u>**
-
-1. Uninstall `sharp`, and ensure that `jimp` is installed.
-2. Edit `config.ts` and set `adapter.useNatives` to `false`.
-
-The above steps can solve any issues where the proxy immediately crashes with a segfault/illegal instruction error.
-
-## Plugins
-
-As of right now, there only exists one plugin: EagProxyAAS (read below for more information).
-
-### EagProxyAAS
-
-EagProxyAAS aims to allow any Eaglercraft client to connect to a normal 1.8.9 Minecraft server, provided that players own a legitimate Minecraft Java copy. Although basic mitigations againt this exist in the plugin, **if you are hosting an instance of this proxy, please take steps to ensure that the proxy cannot access any internal IPs/hostnames as to prevent and mitigate the risk of network enumeration.**
-
-#### Client Support
-
-EagPAAS allows URL parameters to be passed to the proxy in the WebSocket server URL to supply information about the target server, such as the server IP, port, and method of authentication.
-Example: `ws://example.com/?ip=example.com&port=25565&authType=[THEALTENING|ONLINE|OFFLINE]`
-
-#### `vanilla://` URL support
-
-A client-sided, Eaglercraft client-agnostic JavaScript shim that adds support for the custom `vanilla://` URL server protocol through URL rewriting is available in `example_plugins/proxy-shimmer.js`. An EaglerProxy server instance running the EagPAAS plugin is required.  
-Format (`[]` are optional): `vanilla[+online/+offline/+altening]://hostname[:port]` (`port` defaults to `25565`)
-
-#### I don't want to use this plugin!
-
-Remove all the folders in `src/plugins`.
-
-#### IMPORTANT: READ ME BEFORE USING
-
-EaglerProxy and EagProxyAAS:
-
-- is compatible with EaglercraftX and uses its handshake system,
-- intercepts and reads Minecraft packet traffic between you and the server on the other end (necessary for functionality),
-- only uses login data to authenticate with vanilla Minecraft servers,
-- and is open source and safe to use.
-
-EaglerProxy and EagProxyAAS does NOT:
-
-- include any Microsoft/Mojang code,
-- store or otherwise use authentication data for any other purpose as listed on the README,
-  - Unmodified versions will not maliciously handle your login data, although a modified version has the ability to do so. Only use trusted and unmodified versions of both this plugin and proxy.
-- and intentionally put your account at risk.
-
-### Disclaimer
-
-The proxy's software utilizes its own plugin API written in JavaScript, rather than BungeeCord's plugin API. For this reason, plugins written for the official BungeeCord plugin will **not** work on this proxy. Below are some instructions for making your very own EaglerProxy plugin.
-_Refer to `src/plugins/EagProxyAAS` for an example plugin._  
-Each and every EaglerProxy plugin consists of two parts:
-
-- an entry point JavaScript file (this file is ran when the plugin is loaded)
-- a `metadata.json` metadata file
-
-Below is a breakdown of everything inside of `metadata.json`:
-
-```
-{
-    "name": "Example Plugin",
-    "id": "examplePlugin",
-    "version": "1.0.0",
-    "entry_point": "index.js",
-    "requirements": [{ id: "otherPlugin", version: "1.0.0" }],
-    "incompatibilities": [{ id: "someOtherPlugin", version: "2.0.0" }],
-    "load_after": ["otherPlugin"]
-}
+```bash
+git clone https://github.com/你的用户名/eaglercraft-reverse-proxy.git
+cd eaglercraft-reverse-proxy
+npm install
 ```
 
-As of right now, there exists no API reference. Please refer to the preinstalled plugin for details regarding API usage.
+### 配置
 
-## Reporting Issues
+编辑 `src/reverse_proxy/config.ts`：
 
-**NOTE:** Issues asking for help will be converted into discussions. You are expected to have **thoroughly** read all documentation prior to asking for help, and expect no help if you have not done so.
+```typescript
+export const config: ReverseProxyConfig = {
+  tcpHost: "0.0.0.0",      // 监听地址
+  tcpPort: 25565,          // 监听端口
+  eaglerServer: "wss://你的服务器地址",  // Eaglercraft 服务器地址
+  maxPlayers: 20,          // 最大玩家数
+  defaultSkinId: 0,        // 默认皮肤 ID
+  debug: false,            // 调试模式
+};
+```
 
-- Security-related bugs/issues: Directly contact me on Discord (check my profile).
-- Non-security-related bugs/issues: Open a new issue, with the following:
-  - Bug description
-  - Affected versions
-  - Reproduction steps (optional if you can't find)
+### 运行
+
+Windows:
+```bash
+build-and-run.bat
+```
+
+Linux/macOS:
+```bash
+npm run build
+npm run start
+```
+
+### 连接
+
+使用 Minecraft 1.8.9 客户端，服务器地址填写运行代理的机器 IP。
+
+## 工作原理
+
+```
+┌──────────────────┐     TCP      ┌─────────────────┐    WebSocket    ┌────────────────────┐
+│ Minecraft 1.8.9  │ ──────────→  │  ReverseProxy   │ ─────────────→ │  Eaglercraft 服务器 │
+│   (原版客户端)     │              │ (本代理模块)     │                │   (WebSocket)      │
+└──────────────────┘              └─────────────────┘                └────────────────────┘
+```
+
+## 已知问题
+
+- 部分服务器的反作弊插件可能会误判
+- 某些 Eaglercraft 特有功能可能不完全支持
+
+## 许可证
+
+MIT License
+
+## 致谢
+
+- [Eaglercraft](https://github.com/lax1dude/eaglerxserver) - Eaglercraft 服务器实现
+- [minecraft-protocol](https://github.com/PrismarineJS/node-minecraft-protocol) - Minecraft 协议库
