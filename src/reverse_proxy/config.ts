@@ -34,7 +34,7 @@ export function loadConfigFromEnv(): Partial<ReverseProxyConfig> {
     tcpPort: process.env.REVERSE_PROXY_PORT ? parseInt(process.env.REVERSE_PROXY_PORT) : undefined,
     eaglerServer: process.env.EAGLER_SERVER_URL,
     maxPlayers: process.env.MAX_PLAYERS ? parseInt(process.env.MAX_PLAYERS) : undefined,
-    debug: process.env.DEBUG === "true",
+    debug: process.env.DEBUG != null ? process.env.DEBUG === "true" : undefined,
   };
 }
 

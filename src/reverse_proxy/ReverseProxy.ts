@@ -1,4 +1,4 @@
-import EventEmitter from "events";
+import EventEmitter, { once } from "events";
 import mcp, { createServer, Server, states } from "minecraft-protocol";
 import { Logger } from "../logger.js";
 import { EaglerClient } from "./EaglerClient.js";
@@ -31,7 +31,10 @@ export class ReverseProxy extends EventEmitter {
   private config: ReverseProxyConfig;
   private logger: Logger;
   private mcServer: Server | null = null;
+  private running = false;
   private players: Map<string, ConnectedPlayer> = new Map();
+  private playerCleanups: Map<string, () => boolean> = new Map();
+  private pendingPlayers: Map<string, { eaglerClient: EaglerClient; mcClient: any }> = new Map();
 
   constructor(config: ReverseProxyConfig) {
     super();
@@ -44,7 +47,7 @@ export class ReverseProxy extends EventEmitter {
     this.logger.info(`TCP Server: ${this.config.tcpHost}:${this.config.tcpPort}`);
     this.logger.info(`Eaglercraft Server: ${this.config.eaglerServer}`);
 
-    this.mcServer = createServer({
+    const server = createServer({
       host: this.config.tcpHost,
       port: this.config.tcpPort,
       motd: "§6Eaglercraft Reverse Proxy§r\n§7Connect with vanilla MC 1.8.9",
@@ -52,12 +55,21 @@ export class ReverseProxy extends EventEmitter {
       version: "1.8.9",
       maxPlayers: this.config.maxPlayers,
     });
+    this.mcServer = server;
 
-    this.mcServer.on("login", async (mcClient: any) => {
-      await this.handlePlayerConnect(mcClient);
+    server.on("login", (mcClient: any) => {
+      void this.handlePlayerConnect(mcClient);
     });
 
-    this.mcServer.on("error", (err: Error) => {
+    try {
+      await once(server, "listening");
+    } catch (err) {
+      this.mcServer = null;
+      throw err;
+    }
+
+    this.running = true;
+    server.on("error", (err: Error) => {
       this.logger.error(`Server error: ${err.message}`);
     });
 
@@ -69,30 +81,56 @@ export class ReverseProxy extends EventEmitter {
     const username = mcClient.username;
     this.logger.info(`Player ${username} is connecting...`);
 
-    if (this.players.size >= this.config.maxPlayers) {
+    if (!this.running) {
+      mcClient.end("§cProxy is not running");
+      return;
+    }
+
+    if (this.players.size + this.pendingPlayers.size >= this.config.maxPlayers) {
       mcClient.end("§cServer is full!");
       return;
     }
 
-    if (this.players.has(username)) {
+    if (this.players.has(username) || this.pendingPlayers.has(username)) {
       mcClient.end("§cYou are already connected!");
       return;
     }
 
-    try {
-      const eaglerClient = new EaglerClient({
-        wsUrl: this.config.eaglerServer,
-        username: username,
-        skinType: ReverseEnums.SkinType.BUILTIN,
-        skinData: this.config.defaultSkinId,
-      });
+    const eaglerClient = new EaglerClient({
+      wsUrl: this.config.eaglerServer,
+      username,
+      skinType: ReverseEnums.SkinType.BUILTIN,
+      skinData: this.config.defaultSkinId,
+    });
+    this.pendingPlayers.set(username, { eaglerClient, mcClient });
 
+    let mcDisconnected = false;
+    const onHandshakeDisconnect = () => {
+      mcDisconnected = true;
+      eaglerClient.disconnect();
+    };
+    mcClient.once("end", onHandshakeDisconnect);
+
+    try {
       this.logger.info(`[${username}] Connecting to Eaglercraft server...`);
       const result = await eaglerClient.connect();
 
+      if (mcDisconnected || !this.running) {
+        eaglerClient.disconnect();
+        if (!mcDisconnected) mcClient.end("§cProxy stopped during login");
+        return;
+      }
+
       if (!result.success) {
         this.logger.error(`[${username}] Failed to connect: ${result.error}`);
+        eaglerClient.disconnect();
         mcClient.end(`§cFailed to connect: ${result.error}`);
+        return;
+      }
+
+      if (eaglerClient.state !== ReverseEnums.ConnectionState.CONNECTED) {
+        eaglerClient.disconnect();
+        mcClient.end("§cUpstream disconnected during login");
         return;
       }
 
@@ -105,13 +143,17 @@ export class ReverseProxy extends EventEmitter {
         mcClient,
       };
       this.players.set(username, player);
-
       this.setupPacketForwarding(player);
       this.emit("playerConnect", player);
-
     } catch (err) {
-      this.logger.error(`[${username}] Connection error: ${(err as Error).message}`);
-      mcClient.end(`§cConnection error: ${(err as Error).message}`);
+      eaglerClient.disconnect();
+      if (!mcDisconnected) {
+        this.logger.error(`[${username}] Connection error: ${(err as Error).message}`);
+        mcClient.end(`§cConnection error: ${(err as Error).message}`);
+      }
+    } finally {
+      mcClient.removeListener("end", onHandshakeDisconnect);
+      this.pendingPlayers.delete(username);
     }
   }
 
@@ -203,28 +245,35 @@ export class ReverseProxy extends EventEmitter {
       }
     }, 60000);
 
-    // 断开连接处理
-    mcClient.on("end", () => {
+    let disconnected = false;
+    const cleanupPlayer = (): boolean => {
+      if (disconnected) return false;
+      disconnected = true;
       clearInterval(statsInterval);
-      this.logger.info(`[${player.username}] Disconnected from MC client`);
-      eaglerClient.disconnect();
+      this.playerCleanups.delete(player.username);
       this.players.delete(player.username);
       this.emit("playerDisconnect", player);
+      return true;
+    };
+    this.playerCleanups.set(player.username, cleanupPlayer);
+
+    mcClient.on("end", () => {
+      if (!cleanupPlayer()) return;
+      this.logger.info(`[${player.username}] Disconnected from MC client`);
+      eaglerClient.disconnect();
     });
 
     eaglerClient.on("disconnected", () => {
-      clearInterval(statsInterval);
+      if (!cleanupPlayer()) return;
       this.logger.info(`[${player.username}] Disconnected from Eaglercraft server`);
       mcClient.end("§cLost connection to Eaglercraft server");
-      this.players.delete(player.username);
-      this.emit("playerDisconnect", player);
     });
 
     eaglerClient.on("error", (err: Error) => {
-      clearInterval(statsInterval);
+      if (!cleanupPlayer()) return;
       this.logger.error(`[${player.username}] Error: ${err.message}`);
+      eaglerClient.disconnect();
       mcClient.end(`§cError: ${err.message}`);
-      this.players.delete(player.username);
     });
   }
 
@@ -251,16 +300,28 @@ export class ReverseProxy extends EventEmitter {
 
   async stop(): Promise<void> {
     this.logger.info("Stopping Reverse Proxy...");
+    this.running = false;
 
-    for (const player of this.players.values()) {
+    for (const player of Array.from(this.players.values())) {
+      this.playerCleanups.get(player.username)?.();
       player.mcClient.end("§cProxy is shutting down");
       player.eaglerClient.disconnect();
     }
+    this.playerCleanups.clear();
     this.players.clear();
 
-    if (this.mcServer) {
-      this.mcServer.close();
-      this.mcServer = null;
+    for (const pending of this.pendingPlayers.values()) {
+      pending.mcClient.end("§cProxy is shutting down");
+      pending.eaglerClient.disconnect();
+    }
+    this.pendingPlayers.clear();
+
+    const server = this.mcServer;
+    this.mcServer = null;
+    if (server) {
+      const closed = once(server, "close");
+      server.close();
+      await closed;
     }
 
     this.logger.info("Reverse Proxy stopped");

@@ -11,7 +11,7 @@ type JsonOutput = {
 };
 
 export function verboseLogging(newVal?: boolean) {
-  global_verbose = newVal ?? global_verbose ? false : true;
+  global_verbose = newVal ?? !global_verbose;
 }
 
 function jsonLog(type: JsonLogType, message: string): string {
@@ -25,14 +25,13 @@ function jsonLog(type: JsonLogType, message: string): string {
 
 export class Logger {
   loggerName: string;
-  verbose: boolean;
+  verbose?: boolean;
   private jsonLog: boolean =
     process.argv.includes("--json") || process.argv.includes("-j");
 
   constructor(name: string, verbose?: boolean) {
     this.loggerName = name;
-    if (verbose) this.verbose = verbose;
-    else this.verbose = global_verbose;
+    this.verbose = verbose;
   }
 
   info(s: string) {
@@ -78,7 +77,7 @@ export class Logger {
   }
 
   debug(s: string) {
-    if (this.verbose || global_verbose) {
+    if (this.verbose ?? global_verbose) {
       if (!this.jsonLog)
         process.stderr.write(
           `${color.gray("D")} ${color.gray(
@@ -90,6 +89,4 @@ export class Logger {
   }
 }
 
-verboseLogging(
-  process.env.DEBUG != null && process.env.DEBUG != "false" ? true : false
-);
+verboseLogging(process.env.DEBUG === "true");

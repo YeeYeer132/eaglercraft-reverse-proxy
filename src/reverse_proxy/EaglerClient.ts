@@ -50,10 +50,33 @@ export class EaglerClient extends EventEmitter {
 
   async connect(): Promise<HandshakeResult> {
     return new Promise((resolve, reject) => {
-      this.state = ReverseEnums.ConnectionState.HANDSHAKING;
+      let settled = false;
+      let connectionTimer: NodeJS.Timeout | undefined;
 
+      const resolveOnce = (result: HandshakeResult) => {
+        if (settled) return;
+        settled = true;
+        if (connectionTimer) clearTimeout(connectionTimer);
+        resolve(result);
+      };
+
+      const rejectOnce = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        if (connectionTimer) clearTimeout(connectionTimer);
+        reject(err);
+      };
+
+      this.state = ReverseEnums.ConnectionState.HANDSHAKING;
       this.logger.info(`Connecting to ${this.wsUrl}...`);
       this.ws = new WebSocket(this.wsUrl);
+
+      connectionTimer = setTimeout(() => {
+        const err = new Error("WebSocket connection timed out");
+        this.logger.error(err.message);
+        rejectOnce(err);
+        this.disconnect();
+      }, 30000);
 
       this.ws.on("open", async () => {
         this.logger.info("WebSocket connected, starting handshake...");
@@ -63,34 +86,41 @@ export class EaglerClient extends EventEmitter {
             this.state = ReverseEnums.ConnectionState.CONNECTED;
             this.emit("connected");
           }
-          resolve(result);
+          resolveOnce(result);
         } catch (err) {
-          this.state = ReverseEnums.ConnectionState.DISCONNECTED;
           this.logger.error(`Handshake failed: ${(err as Error).message}`);
-          resolve({
+          resolveOnce({
             success: false,
             uuid: "",
             serverBrand: "",
             serverVersion: "",
             error: (err as Error).message,
           });
+          this.disconnect();
         }
       });
 
       this.ws.on("error", (err) => {
+        const wasConnected = this.state === ReverseEnums.ConnectionState.CONNECTED;
         this.logger.error(`WebSocket error: ${err.message}`);
-        this.state = ReverseEnums.ConnectionState.DISCONNECTED;
-        this.emit("error", err);
-        reject(err);
+
+        if (wasConnected) {
+          this.disconnect();
+          if (this.listenerCount("error") > 0) this.emit("error", err);
+        } else {
+          rejectOnce(err);
+          this.disconnect();
+        }
       });
 
       this.ws.on("close", (code, reason) => {
+        const wasConnected = this.state === ReverseEnums.ConnectionState.CONNECTED;
         this.logger.info(`WebSocket closed: code=${code}, reason=${reason.toString()}`);
         this.state = ReverseEnums.ConnectionState.DISCONNECTED;
-        this.emit("disconnected");
+        if (!settled) rejectOnce(new Error("WebSocket closed before handshake completed"));
+        if (wasConnected) this.emit("disconnected");
       });
 
-      // 游戏数据包转发
       this.ws.on("message", (data: Buffer) => {
         if (this.state === ReverseEnums.ConnectionState.CONNECTED) {
           this.emit("packet", data);
@@ -233,19 +263,24 @@ export class EaglerClient extends EventEmitter {
    */
   private waitForPacket(packetId: ReverseEnums.PacketId, timeout = 30000): Promise<Buffer> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.ws!.removeListener("message", handler);
-        this.logger.error(`Timeout waiting for packet 0x${packetId.toString(16)}`);
-        reject(new Error(`Timeout waiting for packet 0x${packetId.toString(16)}`));
-      }, timeout);
+      const ws = this.ws;
+      if (!ws) {
+        reject(new Error("WebSocket is not connected"));
+        return;
+      }
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        ws.removeListener("message", handler);
+        ws.removeListener("close", onClose);
+        ws.removeListener("error", onError);
+      };
 
       const handler = (data: Buffer) => {
         const receivedId = data[0];
 
-        // 断开包处理
         if (receivedId === ReverseEnums.PacketId.SCDisconnectPacket) {
-          clearTimeout(timer);
-          this.ws!.removeListener("message", handler);
+          cleanup();
           const reason = this.parseDisconnectPacket(data);
           this.logger.error(`Server disconnected: ${reason}`);
           reject(new Error(`Server disconnected: ${reason}`));
@@ -253,13 +288,30 @@ export class EaglerClient extends EventEmitter {
         }
 
         if (receivedId === packetId) {
-          clearTimeout(timer);
-          this.ws!.removeListener("message", handler);
+          cleanup();
           resolve(data);
         }
       };
 
-      this.ws!.on("message", handler);
+      const onClose = () => {
+        cleanup();
+        reject(new Error("WebSocket closed during handshake"));
+      };
+
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        this.logger.error(`Timeout waiting for packet 0x${packetId.toString(16)}`);
+        reject(new Error(`Timeout waiting for packet 0x${packetId.toString(16)}`));
+      }, timeout);
+
+      ws.on("message", handler);
+      ws.once("close", onClose);
+      ws.once("error", onError);
     });
   }
 
@@ -326,10 +378,15 @@ export class EaglerClient extends EventEmitter {
    * 断开连接
    */
   disconnect(): void {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    const ws = this.ws;
+    this.ws = null;
+
+    if (ws?.readyState === WebSocket.CONNECTING) {
+      ws.terminate();
+    } else if (ws?.readyState === WebSocket.OPEN) {
+      ws.close();
     }
+
     this.state = ReverseEnums.ConnectionState.DISCONNECTED;
   }
 }
