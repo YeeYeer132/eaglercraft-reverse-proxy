@@ -1,6 +1,6 @@
 import { ReverseProxy } from "./ReverseProxy.js";
 import { getConfig } from "./config.js";
-import { Logger } from "../logger.js";
+import { Logger, verboseLogging } from "../logger.js";
 
 const logger = new Logger("ReverseProxyLauncher");
 
@@ -19,6 +19,7 @@ async function main() {
   logger.info("=".repeat(50));
 
   const config = getConfig();
+  verboseLogging(config.debug);
 
   logger.info("Configuration:");
   logger.info(`  TCP Listen: ${config.tcpHost}:${config.tcpPort}`);

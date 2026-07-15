@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node build/reverse_proxy/index.js",
-    "start:proxy": "node build/index.js",
+    "start:proxy": "node build/reverse_proxy/index.js",
     "dev": "tsc && node build/reverse_proxy/index.js"
   },
   "keywords": [
