@@ -121,10 +121,18 @@ export class EaglerClient extends EventEmitter {
         if (wasConnected) this.emit("disconnected");
       });
 
-      this.ws.on("message", (data: Buffer) => {
-        if (this.state === ReverseEnums.ConnectionState.CONNECTED) {
-          this.emit("packet", data);
+      this.ws.on("message", (data: Buffer, isBinary: boolean) => {
+        if (this.state !== ReverseEnums.ConnectionState.CONNECTED) return;
+
+        if (!isBinary) {
+          const err = new Error("Received non-binary WebSocket frame");
+          this.logger.error(err.message);
+          if (this.listenerCount("error") > 0) this.emit("error", err);
+          this.disconnect();
+          return;
         }
+
+        this.emit("packet", data);
       });
     });
   }
@@ -222,12 +230,15 @@ export class EaglerClient extends EventEmitter {
     if (this.skinType === ReverseEnums.SkinType.BUILTIN) {
       // 内置皮肤
       const skinId = typeof this.skinData === "number" ? this.skinData : 0;
+      if (!ReverseEnums.BUILTIN_SKIN_IDS.includes(skinId)) {
+        throw new Error(`Invalid builtin skin ID: ${skinId}`);
+      }
       packet = Buffer.concat(
         [
           [ReverseEnums.PacketId.CSSetSkinPacket],
           MineProtocol.writeString("skin_v1"),
           Buffer.from(Constants.MAGIC_ENDING_CLIENT_UPLOAD_SKIN_BUILTIN),
-          [skinId],
+          MineProtocol.writeVarInt(skinId),
         ].map((arr) => (arr instanceof Uint8Array ? arr : Buffer.from(arr)))
       );
       this.logger.debug(`Sent skin packet (builtin id=${skinId})`);
@@ -276,7 +287,14 @@ export class EaglerClient extends EventEmitter {
         ws.removeListener("error", onError);
       };
 
-      const handler = (data: Buffer) => {
+      const handler = (data: Buffer, isBinary: boolean) => {
+        if (!isBinary) {
+          cleanup();
+          reject(new Error("Received non-binary WebSocket frame during handshake"));
+          this.disconnect();
+          return;
+        }
+
         const receivedId = data[0];
 
         if (receivedId === ReverseEnums.PacketId.SCDisconnectPacket) {
@@ -321,7 +339,8 @@ export class EaglerClient extends EventEmitter {
   private parseDisconnectPacket(data: Buffer): string {
     try {
       data = data.subarray(1);
-      const reason = MineProtocol.readString(data);
+      const reasonCode = MineProtocol.readVarInt(data);
+      const reason = MineProtocol.readString(reasonCode.newBuffer);
       let message = reason.value;
 
       try {
