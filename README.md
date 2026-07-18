@@ -7,7 +7,7 @@
 - 将 Minecraft TCP 协议转换为 Eaglercraft WebSocket 协议
 - 支持原版 Minecraft 1.8.9 客户端
 - 自动处理握手、皮肤、KeepAlive 等
-- 支持人人插
+- 支持最多20人人人插
 
 ## 快速开始
 
